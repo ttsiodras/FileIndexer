@@ -48,8 +48,8 @@ def scan_folder(top_folder: str):
     All paths are stored as bytes to handle non-UTF8 filenames.
     """
     results = []
-    top_bytes = top_folder.encode(errors='surrogateescape')
     top_normalized = os.path.normpath(top_folder)
+    top_bytes = top_normalized.encode(errors='surrogateescape')
 
     # Use os.walk to traverse the directory tree
     for dirpath, dirnames, filenames in os.walk(top_folder, followlinks=False):
@@ -187,7 +187,8 @@ class FileDB:
                 'SELECT filename, full_path, top_folder, mtime, md5, filesize FROM files'
             )
         else:
-            top_bytes = top_folder.encode(errors='surrogateescape')
+            top_normalized = os.path.normpath(top_folder)
+            top_bytes = top_normalized.encode(errors='surrogateescape')
             cursor = self.conn.execute(
                 'SELECT filename, full_path, top_folder, mtime, md5, filesize FROM files WHERE top_folder = ?',
                 (top_bytes,)
@@ -212,8 +213,8 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int):
     - Update changed files (mtime or filesize changed)
     - Delete missing files
     """
-    top_bytes = top_folder.encode(errors='surrogateescape')
     top_normalized = os.path.normpath(top_folder)
+    top_bytes = top_normalized.encode(errors='surrogateescape')
 
     # Load existing DB data
     db_data = db.load_all()

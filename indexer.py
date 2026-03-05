@@ -438,11 +438,11 @@ def parse_args():
     parser.add_argument('--report', type=str, default='report.log',
                         help='Path to report file (default: report.log in current directory)')
 
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 def main():
-    args = parse_args()
+    parser, args = parse_args()
 
     # Determine number of cores
     if args.ncores is not None and args.ncores > 0:
@@ -470,8 +470,6 @@ def main():
             perform_sync(db, args.top_folder, ncores)
             print(f"[-] DB sync complete for {args.top_folder}")
         else:
-            parser = argparse.ArgumentParser()
-            parser.add_argument('top_folder', nargs='?')
             parser.print_help()
             sys.exit(1)
     finally:

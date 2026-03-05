@@ -297,6 +297,9 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int):
             print(f"[-] Deleted (missing): {to_printable(full_path_bytes)}")
         db.delete_paths(to_delete)
 
+    # Print summary
+    print(f"[-] Sync complete: {len(to_insert)} inserted, {len(to_update)} updated, {len(to_delete)} deleted")
+
 
 def compute_md5_parallel(paths_with_dummy: list, ncores: int) -> dict:
     """
@@ -453,18 +456,18 @@ def main():
         if args.validate is not None:
             # Validation mode
             run_validation(db, args.validate, args.report, ncores)
-            print(f"Validation complete. Report written to {args.report}")
+            print(f"[-] Validation complete. Report written to {args.report}")
         elif args.limit is not None:
             # If top_folder provided, perform sync first
             if args.top_folder:
                 perform_sync(db, args.top_folder, ncores)
             # Then run limit check
             run_limit_check(db, args.limit, args.report)
-            print(f"Limit check complete. Report written to {args.report}")
+            print(f"[-] Limit check complete. Report written to {args.report}")
         elif args.top_folder:
             # Normal sync mode
             perform_sync(db, args.top_folder, ncores)
-            print(f"Sync complete for {args.top_folder}")
+            print(f"[-] DB sync complete for {args.top_folder}")
         else:
             parser = argparse.ArgumentParser()
             parser.add_argument('top_folder', nargs='?')

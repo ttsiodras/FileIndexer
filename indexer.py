@@ -103,10 +103,13 @@ class FileDB:
         self.conn.commit()
 
     def load_all(self) -> dict:
-        """Load all rows from the database, keyed by (top_folder, full_path)."""
+        """Load all rows from the database, keyed by (top_folder, full_path).
+
+        Returns dict keyed by (top_folder, full_path).
+        """
         cursor = self.conn.execute(
-            'SELECT filename, full_path, top_folder, mtime, md5, '
-            'filesize FROM files'
+            'SELECT filename, full_path, top_folder, mtime, md5, filesize '
+            'FROM files'
         )
         result = {}
         for row in cursor:
@@ -178,11 +181,13 @@ class FileDB:
         """Get rows to validate, optionally filtered by top_folder."""
         if top_folder is None:
             cursor = self.conn.execute(
-                'SELECT filename, full_path, top_folder, mtime, md5, filesize FROM files'
+                'SELECT filename, full_path, top_folder, mtime, md5, '
+                'filesize FROM files'
             )
         elif top_folder == 'all':
             cursor = self.conn.execute(
-                'SELECT filename, full_path, top_folder, mtime, md5, filesize FROM files'
+                'SELECT filename, full_path, top_folder, mtime, md5, '
+                'filesize FROM files'
             )
         else:
             top_normalized = os.path.normpath(top_folder)
@@ -234,7 +239,9 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int):
             to_insert.append(item)
         else:
             db_row = db_data[key]
-            if db_row['mtime'] != item['mtime'] or db_row['filesize'] != item['filesize']:
+            mtime_changed = db_row['mtime'] != item['mtime']
+            size_changed = db_row['filesize'] != item['filesize']
+            if mtime_changed or size_changed:
                 to_update.append(item)
 
     # Find deleted files - only for this top_folder
@@ -296,7 +303,9 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int):
         db.delete_paths(to_delete)
 
     # Print summary
-    print(f"[-] Sync complete: {len(to_insert)} inserted, {len(to_update)} updated, {len(to_delete)} deleted")
+    msg = f"[-] Sync complete: {len(to_insert)} inserted, "
+    msg += f"{len(to_update)} updated, {len(to_delete)} deleted"
+    print(f"{msg}")
 
 
 def compute_md5_parallel(paths_with_dummy: list, ncores: int) -> dict:
@@ -322,7 +331,8 @@ def run_limit_check(db: FileDB, limit: int, report_path: str):
     """
     results = db.query_limit(limit)
 
-    with open(report_path, 'w', encoding='utf-8', errors='surrogateescape') as f:
+    with open(report_path, 'w', encoding='utf-8',
+              errors='surrogateescape') as f:
         for full_path, md5, copies in results:
             path_str = to_printable(full_path)
             f.write(f"{path_str}#@#{copies}\n")
@@ -375,7 +385,8 @@ def run_validation(db: FileDB, target: str, report_path: str, ncores: int):
 
     computed_md5s_abs = compute_md5_parallel(paths_to_hash, ncores)
     # Convert to relative path keys
-    computed_md5s = {rel_path_mapping[abs_key]: md5 for abs_key, md5 in computed_md5s_abs.items()}
+    computed_md5s = {rel_path_mapping[ak]: md5
+                     for ak, md5 in computed_md5s_abs.items()}
 
     match = []
     mismatch = []
@@ -392,7 +403,8 @@ def run_validation(db: FileDB, target: str, report_path: str, ncores: int):
             if actual_md5 == expected_md5:
                 match.append((top_folder, full_path, expected_md5))
             else:
-                mismatch.append((top_folder, full_path, expected_md5, actual_md5))
+                mismatch.append((top_folder, full_path, expected_md5,
+                                 actual_md5))
 
     # Find new files (in FS but not in DB)
     for key in fs_data_lookup:
@@ -401,18 +413,26 @@ def run_validation(db: FileDB, target: str, report_path: str, ncores: int):
             new_files.append((top_folder, full_path))
 
     # Write report
-    with open(report_path, 'w', encoding='utf-8', errors='surrogateescape') as f:
+    with open(report_path, 'w', encoding='utf-8',
+              errors='surrogateescape') as f:
         f.write("=== MATCH ===\n")
         for top_folder, path, md5 in match:
-            f.write(f"MATCH: {to_printable(top_folder)}/{to_printable(path)} (md5={md5})\n")
+            tf_str = to_printable(top_folder)
+            p_str = to_printable(path)
+            f.write(f"MATCH: {tf_str}/{p_str} (md5={md5})\n")
 
         f.write("\n=== MISMATCH ===\n")
         for top_folder, path, expected, actual in mismatch:
-            f.write(f"MISMATCH: {to_printable(top_folder)}/{to_printable(path)} (expected={expected}, actual={actual})\n")
+            tf_str = to_printable(top_folder)
+            p_str = to_printable(path)
+            f.write(f"MISMATCH: {tf_str}/{p_str} (expected={expected}, "
+                    f"actual={actual})\n")
 
         f.write("\n=== MISSING ===\n")
         for top_folder, path, expected in missing:
-            f.write(f"MISSING: {to_printable(top_folder)}/{to_printable(path)} (expected_md5={expected})\n")
+            tf_str = to_printable(top_folder)
+            p_str = to_printable(path)
+            f.write(f"MISSING: {tf_str}/{p_str} (expected_md5={expected})\n")
 
         f.write("\n=== NEW ===\n")
         for top_folder, path in new_files:
@@ -422,7 +442,8 @@ def run_validation(db: FileDB, target: str, report_path: str, ncores: int):
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='File scanner with SQLite tracking, parallel MD5, and validation.'
+        description=('File scanner with SQLite tracking, parallel MD5, '
+                     'and validation.')
     )
     parser.add_argument('top_folder', nargs='?', help='Top folder to scan')
     parser.add_argument('-n', '--ncores', type=int, default=None,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-File Scanner Script - Scans folders, tracks files in SQLite, supports parallel MD5 computation,
-duplicate-copy limits, and validation reporting.
+File Scanner Script - Scans folders, tracks files in SQLite, supports
+parallel MD5 computation, duplicate-copy limits, and validation reporting.
 """
 
 import argparse
@@ -9,9 +9,7 @@ import hashlib
 import os
 import sqlite3
 import sys
-from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
 
 
 def compute_md5(filepath: bytes) -> str:
@@ -29,7 +27,9 @@ def compute_md5(filepath: bytes) -> str:
 def compute_md5_wrapper(args):
     """Wrapper for multiprocessing."""
     filepath_bytes, _ = args
-    return compute_md5(filepath_bytes)
+    res = compute_md5(filepath_bytes)
+    print(f"[-] Computed MD5 for {to_printable(filepath_bytes)}")
+    return res
 
 
 def get_file_stat(filepath: bytes):
@@ -44,15 +44,16 @@ def get_file_stat(filepath: bytes):
 def scan_folder(top_folder: str):
     """
     Recursively scan a folder and yield file metadata.
-    Returns a list of dicts with: filename, full_path (relative to top_folder), top_folder, mtime, filesize.
-    All paths are stored as bytes to handle non-UTF8 filenames.
+    Returns a list of dicts with: filename, full_path (relative to
+    top_folder), top_folder, mtime, filesize. All paths are stored as
+    bytes to handle non-UTF8 filenames.
     """
     results = []
     top_normalized = os.path.normpath(top_folder)
     top_bytes = top_normalized.encode(errors='surrogateescape')
 
     # Use os.walk to traverse the directory tree
-    for dirpath, dirnames, filenames in os.walk(top_folder, followlinks=False):
+    for dirpath, _, filenames in os.walk(top_folder, followlinks=False):
         for filename in filenames:
             full_path_abs = os.path.join(dirpath, filename)
             # Compute relative path from top_folder
@@ -64,17 +65,8 @@ def scan_folder(top_folder: str):
             except (IOError, OSError):
                 continue
 
-            # Convert to bytes if needed, handling non-UTF8 filenames
-            if isinstance(filename, str):
-                filename_bytes = filename.encode(errors='surrogateescape')
-            else:
-                filename_bytes = filename
-
-            if isinstance(rel_path, str):
-                rel_path_bytes = rel_path.encode(errors='surrogateescape')
-            else:
-                rel_path_bytes = rel_path
-
+            filename_bytes = filename.encode(errors='surrogateescape')
+            rel_path_bytes = rel_path.encode(errors='surrogateescape')
             results.append({
                 'filename': filename_bytes,
                 'full_path': rel_path_bytes,
@@ -113,7 +105,8 @@ class FileDB:
     def load_all(self) -> dict:
         """Load all rows from the database, keyed by (top_folder, full_path)."""
         cursor = self.conn.execute(
-            'SELECT filename, full_path, top_folder, mtime, md5, filesize FROM files'
+            'SELECT filename, full_path, top_folder, mtime, md5, '
+            'filesize FROM files'
         )
         result = {}
         for row in cursor:
@@ -133,8 +126,8 @@ class FileDB:
         """Insert multiple rows into the database."""
         for row in rows:
             self.conn.execute(
-                '''INSERT INTO files (filename, full_path, top_folder, mtime, md5, filesize)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                '''INSERT INTO files (filename, full_path, top_folder,
+                   mtime, md5, filesize) VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(top_folder, full_path) DO UPDATE SET
                        filename=excluded.filename,
                        top_folder=excluded.top_folder,
@@ -150,23 +143,28 @@ class FileDB:
         """Update multiple rows in the database."""
         for row in rows:
             self.conn.execute(
-                '''UPDATE files SET filename=?, mtime=?, md5=?, filesize=?
-                   WHERE top_folder=? AND full_path=?''',
+                '''UPDATE files SET filename=?, mtime=?, md5=?,
+                   filesize=? WHERE top_folder=? AND full_path=?''',
                 (row['filename'], row['mtime'],
-                 row.get('md5'), row['filesize'], row['top_folder'], row['full_path'])
+                 row.get('md5'), row['filesize'], row['top_folder'],
+                 row['full_path'])
             )
         self.conn.commit()
 
     def delete_paths(self, paths: list):
         """Delete rows by (top_folder, full_path) tuples."""
         for top_folder, full_path in paths:
-            self.conn.execute('DELETE FROM files WHERE top_folder = ? AND full_path = ?', (top_folder, full_path))
+            self.conn.execute(
+                'DELETE FROM files WHERE top_folder = ? AND full_path = ?',
+                (top_folder, full_path)
+            )
         self.conn.commit()
 
     def query_limit(self, limit: int) -> list:
         """
-        Find (full_path, md5) pairs that appear in fewer than `limit` distinct top_folders.
-        Returns list of (full_path, md5, copy_count).
+        Find (full_path, md5) pairs that appear in fewer than `limit`
+        distinct top_folders. Returns list of (full_path, md5,
+        copy_count).
         """
         cursor = self.conn.execute('''
             SELECT full_path, md5, COUNT(DISTINCT top_folder) AS copies
@@ -190,7 +188,8 @@ class FileDB:
             top_normalized = os.path.normpath(top_folder)
             top_bytes = top_normalized.encode(errors='surrogateescape')
             cursor = self.conn.execute(
-                'SELECT filename, full_path, top_folder, mtime, md5, filesize FROM files WHERE top_folder = ?',
+                'SELECT filename, full_path, top_folder, mtime, md5, '
+                'filesize FROM files WHERE top_folder = ?',
                 (top_bytes,)
             )
         return cursor.fetchall()
@@ -203,7 +202,7 @@ def to_printable(data: bytes) -> str:
     """Convert bytes to a printable string, replacing non-printable chars."""
     if isinstance(data, str):
         return data
-    return data.decode(errors='surrogateescape')
+    return data.decode(errors='ignore')
 
 
 def perform_sync(db: FileDB, top_folder: str, ncores: int):
@@ -266,7 +265,6 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int):
                     abs_key = ak
                     break
             item['md5'] = md5s_abs.get(abs_key, '') if abs_key else ''
-            print(f"[-] Computed MD5 for {to_printable(rel_key)}")
         db.insert_rows(to_insert)
 
     # Compute MD5s for updates - need absolute paths
@@ -289,7 +287,6 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int):
                     abs_key = ak
                     break
             item['md5'] = md5s_abs.get(abs_key, '') if abs_key else ''
-            print(f"[-] Computed MD5 for {to_printable(rel_key)}")
         db.update_rows(to_update)
 
     # Delete missing files
@@ -321,6 +318,7 @@ def run_limit_check(db: FileDB, limit: int, report_path: str):
     """
     Run the limit check and write results to report.log.
     Each line: <full_path>#@#<existing_copy_count>
+    (Note: report_path is where the report is written)
     """
     results = db.query_limit(limit)
 
@@ -333,7 +331,7 @@ def run_limit_check(db: FileDB, limit: int, report_path: str):
 def run_validation(db: FileDB, target: str, report_path: str, ncores: int):
     """
     Validate DB rows against filesystem.
-    Generate report.log with MATCH, MISMATCH, MISSING, NEW sections.
+    Generate report with MATCH, MISMATCH, MISSING, NEW sections.
     """
     rows = db.get_rows_for_validation(target)
 
@@ -428,15 +426,21 @@ def parse_args():
     )
     parser.add_argument('top_folder', nargs='?', help='Top folder to scan')
     parser.add_argument('-n', '--ncores', type=int, default=None,
-                        help='Number of cores for parallel MD5 computation (default: all available)')
+                        help='Number of cores for parallel MD5 computation '
+                        '(default: all available)')
     parser.add_argument('-l', '--limit', type=int, default=None,
-                        help='Check that each (full_path, md5) appears in at least N distinct top_folders')
-    parser.add_argument('-v', '--validate', nargs='?', const='all', default=None,
-                        help='Validate DB rows against filesystem. Optional arg: top_folder or "all"')
+                        help='Check that each (full_path, md5) appears in '
+                        'at least N distinct top_folders')
+    parser.add_argument('-v', '--validate', nargs='?', const='all',
+                        default=None,
+                        help='Validate DB rows against filesystem. '
+                        'Optional arg: top_folder or "all"')
     parser.add_argument('--db', type=str, default='files.db',
-                        help='Path to SQLite database (default: files.db in current directory)')
+                        help='Path to SQLite database '
+                        '(default: files.db in current directory)')
     parser.add_argument('--report', type=str, default='report.log',
-                        help='Path to report file (default: report.log in current directory)')
+                        help='Path to report file '
+                        '(default: report.log in current directory)')
 
     return parser, parser.parse_args()
 

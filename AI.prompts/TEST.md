@@ -1,0 +1,7 @@
+- Test1: add two files in an empty folder, see that they get indexed in the DB
+- Test2: remove one of them, see that it gets removed from the db when we re-run
+- Test3: re-run, see that no MD5 is recomputed
+- Test4: touch the single file left, re-run, see that MD5 is updated
+- Test5: make a separate folder, copy the single file inside it too, re-run to index the new folder, then re-run with -l 2, verify that nothing is in the report (since every files exists at least twice).
+- Test6: launch with -v, verify that the generated report doesn't show anything except MATCHes
+- Test7: modify the copy in the second folder, rescan the second folder with indexer, re-launch with -l 2, and verify the report now indeed complains about it.

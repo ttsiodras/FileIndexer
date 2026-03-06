@@ -1,0 +1,8 @@
+.claude/
+files.db
+report.log
+__pycache__
+.flake8
+Delme/
+.setup
+.analysed

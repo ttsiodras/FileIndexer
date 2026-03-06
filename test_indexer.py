@@ -6,7 +6,6 @@ options and asserts the expected state of the SQLite database and the generated
 ``report.log``.
 """
 
-import os
 import shutil
 import sqlite3
 import subprocess

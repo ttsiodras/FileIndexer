@@ -320,7 +320,7 @@ def run_limit_check(db: FileDB, limit: int, report_path: str) -> None:
     with open(report_path, 'w', encoding='utf-8', errors='replace') as f:
         for full_path, md5, copies in results:
             path_str = to_printable(full_path)
-            f.write(f"{path_str}#@#{md5}#@#{copies}\n")
+            f.write(f"{path_str}#@#{copies} {md5}\n")
 
 
 def scan_target(

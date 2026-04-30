@@ -102,7 +102,11 @@ def scan_folder(top_folder: SafeTopFolder) -> List[FileMetadata]:
     *top_folder* must be an absolute path as bytes. Returns a list of
     ``FileMetadata`` with filename, full_path (relative to top_folder),
     top_folder, mtime, and filesize.
+    
+    Raises FileNotFoundError if the folder does not exist.
     """
+    if not os.path.isdir(top_folder):
+        raise FileNotFoundError(f"Folder does not exist: {to_printable(top_folder)}")
     results: List[FileMetadata] = []
     for dirpath, _, filenames in os.walk(top_folder, followlinks=False):
         for filename in filenames:

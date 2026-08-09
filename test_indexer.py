@@ -6,6 +6,7 @@ options and asserts the expected state of the SQLite database and the generated
 ``report.log``.
 """
 
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -42,11 +43,6 @@ def query_db(db_path: Path):
 
 def read_report(report_path: Path) -> str:
     return report_path.read_text(encoding="utf-8", errors="ignore")
-
-
-def assert_match(report: str, pattern: str):
-    if pattern not in report:
-        raise AssertionError(f"Expected pattern not found in report: {pattern!r}")
 
 
 def main():
@@ -148,7 +144,158 @@ def main():
         assert "#@#" in report, "Limit report did not flag the mismatched copy"
         print("Test7 passed")
 
-        print("All tests passed successfully.")
+    # ---------- Additional tests: error paths and edge cases (raise coverage) ----------
+    with tempfile.TemporaryDirectory() as tmpdir2:
+        work = Path(tmpdir2)
+        db_path = work / "test.db"
+        report_path = work / "report.log"
+
+        def clean():
+            for p in (db_path, report_path):
+                if p.exists():
+                    p.unlink()
+            for suf in ("-wal", "-shm", "-journal"):
+                q = Path(str(db_path) + suf)
+                if q.exists():
+                    q.unlink()
+
+        def sync_folder(folder, expected_count=None):
+            proc = run_indexer([str(folder), "--db", str(db_path)], cwd=work)
+            assert proc.returncode == 0, proc.stderr
+            if expected_count is not None:
+                assert len(query_db(db_path)) == expected_count, \
+                    f"Expected {expected_count} rows"
+
+        # Test 8: a deleted file is removed from the DB and reported
+        clean()
+        d = work / "dele"
+        d.mkdir()
+        (d / "keep.txt").write_text("keep me")
+        sync_folder(d, 1)
+        (d / "keep.txt").unlink()
+        proc = run_indexer([str(d), "--db", str(db_path)], cwd=work)
+        assert proc.returncode == 0
+        assert len(query_db(db_path)) == 0, "Deleted file still in DB"
+        assert "Deleted (missing)" in proc.stdout
+        print("Test8 passed")
+
+        # Test 9: validation flags MATCH, MISMATCH, MISSING and NEW together
+        clean()
+        f = work / "val"
+        f.mkdir()
+        for n, content in {"a.txt": "alpha", "b.txt": "beta",
+                           "c.txt": "gamma"}.items():
+            (f / n).write_text(content)
+        sync_folder(f, 3)
+        (f / "a.txt").write_text("ALPHA-CHANGED")   # content changed -> MISMATCH
+        (f / "b.txt").unlink()                       # removed        -> MISSING
+        (f / "d.txt").write_text("delta brand new")  # new            -> NEW
+        proc = run_indexer(["-v", "all", "--db", str(db_path),
+                            "--report", str(report_path)], cwd=work)
+        assert proc.returncode == 0
+        report = read_report(report_path)
+        assert "=== MATCH ===" in report
+        assert "=== MISMATCH ===" in report
+        assert "=== MISSING ===" in report
+        assert "=== NEW ===" in report
+        assert any(line.startswith("MISMATCH:") and "a.txt" in line
+                   for line in report.splitlines())
+        assert any(line.startswith("MISSING:") and "b.txt" in line
+                   for line in report.splitlines())
+        assert any(line.startswith("NEW:") and "d.txt" in line
+                   for line in report.splitlines())
+        print("Test9 passed")
+
+        # Test 10: validation restricted to a single folder (-v FOLDER)
+        clean()
+        g = work / "single"
+        g.mkdir()
+        (g / "s.txt").write_text("solo")
+        sync_folder(g, 1)
+        proc = run_indexer(["-v", str(g), "--db", str(db_path),
+                            "--report", str(report_path)], cwd=work)
+        assert proc.returncode == 0
+        assert "=== MATCH ===" in read_report(report_path)
+        print("Test10 passed")
+
+        # Test 11: --validate and --limit are mutually exclusive
+        clean()
+        proc = run_indexer(["-v", "all", "-l", "2", str(g),
+                            "--db", str(db_path)], cwd=work)
+        assert proc.returncode != 0
+        assert "mutually exclusive" in proc.stderr
+        print("Test11 passed")
+
+        # Test 12: scanning a nonexistent folder raises a clear error
+        clean()
+        proc = run_indexer([str(work / "does_not_exist"),
+                            "--db", str(db_path)], cwd=work)
+        assert proc.returncode != 0
+        assert "does not exist" in proc.stderr
+        print("Test12 passed")
+
+        # Test 13: running with no arguments prints help and exits
+        proc = run_indexer([], cwd=work)
+        assert proc.returncode == 1
+        assert "usage:" in proc.stdout
+        print("Test13 passed")
+
+        # Test 14: symbolic links are skipped
+        clean()
+        sl = work / "links"
+        sl.mkdir()
+        (sl / "real.txt").write_text("real content")
+        os.symlink("real.txt", sl / "link.txt")
+        sync_folder(sl, 1)
+        paths = [row[0] for row in query_db(db_path)]
+        assert b"real.txt" in paths
+        assert b"link.txt" not in paths, "Symlink was indexed"
+        print("Test14 passed")
+
+        # Test 15: -v all skips a top_folder that no longer exists
+        clean()
+        gone = work / "gone"
+        gone.mkdir()
+        (gone / "a.txt").write_text("x")
+        sync_folder(gone, 1)
+        shutil.rmtree(gone)
+        proc = run_indexer(["-v", "all", "--db", str(db_path),
+                            "--report", str(report_path)], cwd=work)
+        assert proc.returncode == 0
+        assert "Top folder missing, skipping" in proc.stdout
+        print("Test15 passed")
+
+        # Test 16: unreadable file -> MD5 error (skipped when running as root)
+        if os.geteuid() != 0:
+            clean()
+            u = work / "unread"
+            u.mkdir()
+            (u / "secret.txt").write_text("sensitive data")
+            os.chmod(u / "secret.txt", 0)
+            try:
+                proc = run_indexer([str(u), "--db", str(db_path)], cwd=work)
+                assert "MD5 ERROR" in proc.stdout
+                rows = query_db(db_path)
+                assert any(r[0] == b"secret.txt" and r[1] is None
+                           for r in rows)
+            finally:
+                os.chmod(u / "secret.txt", 0o644)
+            print("Test16 passed")
+        else:
+            print("Test16 skipped (running as root)")
+
+        # Test 17: many files exercise the bounded refill and the progress print
+        clean()
+        big = work / "big"
+        big.mkdir()
+        for i in range(1000):
+            (big / f"f{i:04d}.txt").write_text(str(i))
+        proc = run_indexer([str(big), "--db", str(db_path)], cwd=work)
+        assert proc.returncode == 0
+        assert len(query_db(db_path)) == 1000
+        print("Test17 passed")
+
+    print("All tests passed successfully.")
 
 
 if __name__ == "__main__":

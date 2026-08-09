@@ -5,3 +5,5 @@
 - Test5: make a separate folder, copy the single file inside it too, re-run to index the new folder, then re-run with -l 2, verify that nothing is in the report (since every files exists at least twice).
 - Test6: launch with -v, verify that the generated report doesn't show anything except MATCHes
 - Test7: modify the copy in the second folder, rescan the second folder with indexer, re-launch with -l 2, and verify the report now indeed complains about it.
+
+Add more tests to get coverage as high as possible.

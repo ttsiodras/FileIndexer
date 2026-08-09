@@ -1,0 +1,6 @@
+# Development / quality tooling (used by the Makefile targets).
+flake8
+pylint
+mypy
+pytest
+coverage

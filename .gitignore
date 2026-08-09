@@ -1,8 +1,23 @@
+# AI / editor scratch files
 .claude/
+
+# Runtime artifacts (never commit these - they contain your file index)
 files.db
+files.db-wal
+files.db-shm
 report.log
-__pycache__
+
+# Python build / cache artifacts
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coveragerc
+
+# Local tool config and setup markers
 .flake8
-Delme/
 .setup
 .analysed
+
+# Virtual environment
+.venv/

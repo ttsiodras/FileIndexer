@@ -1,12 +1,136 @@
-Vibe-coded this with Qwen-3.5-122b, then with GPT-OSS-120b, and
-finally cleaned it up with Claude.
+# FileIndexer
 
-I can't believe machines can do this from my prompts (see `AI.prompts`
-folder) - esp the first two are local models I run in complete network
-isolation on my AIMAX+ 395 *(see my `local.AI` folder in my `utils` repo
-for `Dockerfile`s)*.
+Tracks files across folders in a single SQLite database, computes MD5 checksums
+in parallel, and helps you verify redundancy and integrity — for example across
+several external/mounted USB drives that are supposed to contain copies of the
+same data.
 
-Having a test harness definitely helps; but Claude is on a different level
-even without them. Like, way... way different level.
+The tool is a single Python script (`indexer.py`) with **no runtime
+dependencies** — it uses only the standard library.
 
-Beyond my skill, that's for sure.
+## What it does
+
+- **Sync** — recursively indexes one or more folders into a SQLite database.
+  New files are inserted, changed files (different size or mtime) are re-hashed,
+  and rows for files that no longer exist are removed.
+- **Limit check** (`-l/--limit`) — flags files that appear in fewer than *N*
+  distinct top folders, so you can spot copies that are missing from some of
+  your drives.
+- **Validate** (`-v/--validate`) — re-computes every MD5 on disk and compares it
+  against the database, so you can detect silently corrupted or missing files.
+- **Parallel hashing** — MD5 computation is spread across all cores by default;
+  tune it with `-n/--ncores`. Useful also for non-SSD drives, since multiple
+  concurrent readers may actually be much slower than a single reader;
+  and also wear down the drive *(so use `-n 1` for such drives)*.
+
+## Database
+
+By default everything is stored in `files.db` in the current folder.
+Each row of table `files` holds:
+
+| column      | meaning                                    |
+|-------------|--------------------------------------------|
+| `filename`  | bare file name                             |
+| `full_path` | path relative to the scanned `top_folder`  |
+| `top_folder`| the root folder that was scanned           |
+| `mtime`     | modification time used to detect changes   |
+| `md5`       | checksum                                   |
+| `filesize`  | size in bytes                              |
+
+Paths are stored as raw bytes so that even non-UTF-8 file names are handled safely.
+
+## Usage
+
+```
+python3 indexer.py [options] FOLDER [FOLDER ...]
+```
+
+### Sync folders into the index
+
+```sh
+# Index two external non-SSD USB drives
+python3 indexer.py -n 1 /mnt/usb1 /mnt/usb2
+
+# Use a specific database and limit parallel hashing to 4 cores
+python3 indexer.py -n 4 --db /data/files.db /mnt/ssd
+```
+
+### Find files that lack redundancy
+
+```sh
+# Report every (full_path) that exists in fewer than 3 distinct top_folders
+python3 indexer.py -l 3 -n 1 /mnt/usb1 /mnt/usb2
+```
+
+The `-l` mode syncs the given folders first, then writes the low-redundancy
+report to `report.log` (override with `--report`).
+
+### Validate the database against the filesystem
+
+```sh
+# Validate every stored row
+python3 indexer.py -v
+
+# Validate only a single folder
+python3 indexer.py -v /mnt/usb1
+```
+
+The report classifies every row as `MATCH`, `MISMATCH`, `MISSING` or `NEW`, and
+also echoes problems to the console. Validation and limit-check are mutually
+exclusive (`--validate` and `--limit` can't be combined).
+
+### Options
+
+```
+positional:
+  top_folder             folder(s) to scan
+
+optional:
+  -n, --ncores N         parallel workers for MD5 hashing (default: all cores)
+  -l, --limit N          flag files present in fewer than N top_folders
+  -v, --validate [T]     validate DB against filesystem (T = a folder or 'all')
+  --db PATH              SQLite database path (default: files.db)
+  --report PATH          report path (default: report.log)
+  -h, --help             show help
+```
+
+## Requirements
+
+- **Python 3.6+** — the script needs no third-party packages; the standard library
+  is enough.
+- For development (linting, type-checking, coverage etc) the Makefile will install
+  a set of tools from `requirements-dev.txt`.
+
+## Development
+
+Install the development/quality tooling into a virtualenv and run the standard
+checks with `make`:
+
+```sh
+make            # set up venv, then run flake8 + pylint + mypy
+make test       # run the end-to-end test suite
+make coverage   # run tests under coverage and report indexer.py coverage
+make clean      # remove build artifacts and the virtualenv marker
+```
+
+Individual checks can be run with `make flake8`, `make pylint`, `make mypy`.
+
+The test suite (`test_indexer.py`) drives the tool end-to-end by launching it as
+a subprocess against temporary folders.
+
+## Layout
+
+```
+indexer.py           the tool (single file, stdlib only)
+test_indexer.py      end-to-end test suite
+Makefile             developer tasks
+pylint.cfg           lint configuration
+requirements.txt     runtime deps (intentionally empty)
+requirements-dev.txt dev/quality tooling
+AI.prompts/          the prompts used to develop the tool
+LICENSE              MIT license
+```
+
+## License
+
+See file LICENSE.

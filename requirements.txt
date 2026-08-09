@@ -1,5 +1,2 @@
-flake8
-pylint
-mypy
-pytest
-coverage
+# The FileIndexer itself uses only the Python standard library and has no
+# runtime dependencies. This file is intentionally empty.

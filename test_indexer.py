@@ -89,7 +89,7 @@ def main():
         # The MD5 should stay the same; we also verify that no MD5 computation
         # messages were printed (i.e., the script did not recompute hashes).
         assert proc.returncode == 0, "Re‑run failed"
-        assert "Computed MD5" not in proc.stdout, "Unexpected MD5 recomputation"
+        assert "computed MD5" not in proc.stdout, "Unexpected MD5 recomputation"
         print("Test3 passed")
 
         # ---------- Test 4: modify the remaining file, MD5 should update ----------
@@ -99,7 +99,7 @@ def main():
         new_md5 = query_db(db_path)[0][1]
         assert old_md5 != new_md5, "MD5 was not updated after modification"
         # Verify that MD5 recomputation was performed (message printed)
-        assert "Computed MD5" in proc.stdout, "MD5 recomputation not reported"
+        assert "computed MD5" in proc.stdout, "MD5 recomputation not reported"
         print("Test4 passed")
 
         # ---------- Test 5: duplicate file in second folder, -l 2 no report ----------

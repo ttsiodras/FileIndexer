@@ -98,14 +98,19 @@ def stream_md5s(
     items: Iterable[FileMetadata],
     ncores: int,
     batch: Optional[int] = None,
-) -> Generator[Tuple[FileMetadata, HashResult], None, None]:
-    """Yield ``(item, md5_or_None)`` as each worker finishes.
+) -> Generator[Tuple[FileMetadata, HashResult, bool], None, None]:
+    """Yield ``(item, md5_or_None, degraded)`` as each worker finishes.
 
     *items* is any iterable of :class:`FileMetadata`; it is consumed
     lazily, so callers may pass a generator (e.g. ``itertools.chain``)
     without materializing the whole list. Results arrive in completion
     order, not submission order, so callers can act on each hash
     immediately without waiting for the full batch.
+
+    ``degraded`` is True only when ``md5`` is ``None`` *because the hashing
+    pool broke* (a worker was killed / OOM'd), as opposed to a normal
+    per-file I/O error. Callers can use it to avoid treating a mass pool
+    failure as a per-file read error.
 
     Only a bounded window (``batch``) of files is submitted to the pool at
     a time; as one completes it is yielded and a replacement is submitted.
@@ -142,7 +147,7 @@ def stream_md5s(
                     # to the "could not read" path: store md5=None (a NULL row)
                     # so find_changes re-hashes it on the next run.
                     md5 = None
-                yield item, md5
+                yield item, md5, pool_dead
                 if pool_dead:
                     # The pool broke during a refill below; already-submitted
                     # futures are handled above (result() raises BrokenProcessPool
@@ -172,9 +177,9 @@ def stream_md5s(
                     # the future.result() -> None path above -- so no item is
                     # dropped and none is drained twice.
                     pool_dead = True
-                    yield nxt, None
+                    yield nxt, None, True
                     for remaining in it:
-                        yield remaining, None
+                        yield remaining, None, True
                     continue
                 future_to_item[f] = nxt
                 pending.add(f)
@@ -429,18 +434,27 @@ def sync_files_with_md5(
     of files to be hashed, used for the progress display.
     """
     count = 0
-    for item, md5 in stream_md5s(files, ncores):
+    degraded = 0
+    for item, md5, died in stream_md5s(files, ncores):
         count += 1
         abs_bytes: AbsPath = os.path.join(item.top_folder, item.full_path)
-        if md5 is None:
+        if md5 is None and not died:
             print(f"[!] MD5 ERROR, could not read: {to_printable(abs_bytes)}")
-        else:
+        elif md5 is not None:
             print(f"[-] MD5: {count}/{total} files, "
                   f"computed MD5 for {to_printable(abs_bytes)}")
+        else:
+            # md5 is None because the hashing pool broke (a worker died);
+            # avoid flooding the log with a per-file error for every file that
+            # was in flight. They are stored as NULL and retried next run.
+            degraded += 1
         # Update the database immediately for this file.
         # Frequent commits ensure data is saved on crash.
         db.upsert_with_md5(item, md5)
         db.commit()
+    if degraded:
+        print(f"[!] A hashing worker died; {degraded} file(s) left unhashed "
+              f"(md5=NULL) and will be retried on the next run.")
 
 
 def find_changes(
@@ -578,7 +592,7 @@ def compute_md5s_for_matches(
     count = 0
     result: Dict[TopFolderAndFullPath, HashResult] = {}
     last_percent = -1.0
-    for item, md5 in stream_md5s(matched, ncores):
+    for item, md5, _died in stream_md5s(matched, ncores):
         count += 1
         percent = (count / total) * 100 if total else 0
         if percent >= last_percent + 1 or count == total:

@@ -380,10 +380,13 @@ def main():
             _ix.ProcessPoolExecutor = orig_pool
         assert len(results) == n, \
             f"stream_md5s yielded {len(results)} of {n} after pool death"
-        ok = sum(1 for _, m in results if m == "deadbeef")
-        none = sum(1 for _, m in results if m is None)
+        ok = sum(1 for _, m, _ in results if m == "deadbeef")
+        none = sum(1 for _, m, _ in results if m is None)
+        degraded = sum(1 for _, m, d in results if m is None and d)
         assert ok == batch and none == n - batch, \
             f"expected {batch} hashed + {n-batch} None, got {ok} + {none}"
+        assert degraded == n - batch, \
+            f"pool-death Nones must be marked degraded, got {degraded}"
         yielded = sorted(r[0].full_path for r in results)
         expected = sorted(it.full_path for it in items)
         assert yielded == expected, "items got lost/reordered on pool death"

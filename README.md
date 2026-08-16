@@ -7,6 +7,16 @@ external/mounted USB drives that are supposed to contain copies of the same data
 The tool is a single Python script (`indexer.py`) with **no runtime
 dependencies** — it uses only the standard library.
 
+## Quick start
+
+```sh
+python3 indexer.py -n 1 /mnt/usb1 /mnt/usb2   # index your drives, using one core only
+                                              # (avoid thrashing mechanical drives)
+python3 indexer.py /mnt/usb3ssd           # index external SSD, using all cores available
+python3 indexer.py -l 2                   # which files exist on fewer than 2 drives?
+python3 indexer.py -v                     # re-hash the drives and verify every checksum
+```
+
 ## What it does
 
 - **Sync** — recursively indexes one or more folders into a SQLite database.

@@ -6,8 +6,10 @@ and supports duplicate-copy limits (-l) and integrity validation (-v).
     https://github.com/ttsiodras/FileIndexer
 
 See the repository README for usage, and the AI.prompts/ folder for the
-prompts used for development. This is an evolving experiment in using
-local AI - gotta say, quite pleased with the result.
+prompts used during development. This codebase was built with the help of
+local AI models, as a hands-on use case for applying AI the way I want it
+(local, private). But don't hold this against it; I did review the result
+and honestly believe this to be a good Python codebase.
 
 Models used so far in building/debugging/improving this code:
 
@@ -189,10 +191,9 @@ def stream_md5s(
 # path contains one of these tokens as a substring is skipped (both its files
 # and its subtree). Kept as bytes to match the byte paths used in the scan.
 #
-# In my case, I don't care about the Deepseek weights (I can always redownload
-# them; nor do I care about the aard offline wikipedia slob files, for the same
-# reason (see https://github.com/ttsiodras/offline-wikipedia-via-slobby-and-mathjax
-# for details of what these data are about).
+# Add a distinctive path fragment for anything you'd rather not index (e.g.
+# large files you can cheaply re-download, such as model weights or offline
+# wikipedia mirrors). An empty list disables the filter.
 #
 _DROP_DIR_TOKENS: List[bytes] = [
     # b'Deepseek', b'aard',

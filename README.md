@@ -11,7 +11,8 @@ dependencies** — it uses only the standard library.
 
 - **Sync** — recursively indexes one or more folders into a SQLite database.
   New files are inserted, changed files (different size or mtime) are re-hashed,
-  and rows for files that no longer exist are removed.
+  and rows for files that no longer exist are removed. Note that sync detects
+  changes by size and mtime, just as rsync does.
 - **Limit check** (`-l/--limit`) — flags files that appear in fewer than *N*
   distinct top folders, so you can spot copies that are missing from some of
   your drives.
@@ -61,11 +62,14 @@ python3 indexer.py -n 4 --db /data/files.db /mnt/ssd
 
 ```sh
 # Report every full_path that exists in fewer than 2 distinct top folders
-python3 indexer.py -l 2 -n 1 /mnt/usb1 /mnt/usb2
+python3 indexer.py -l 2
 ```
 
-The `-l` mode syncs the given folders first, then writes the low-redundancy
-report to `report.log` (override with `--report`).
+The `-l` mode writes a low-redundancy report to `report.log` (override with
+`--report`). Passing a list of folders scopes the check to exactly those folders;
+with no folders passed, it checks every folder currently in the database
+(so the `indexer -l 2` example above will tell you which files are stored in
+only one drive).
 
 ### Validate the database against the filesystem
 

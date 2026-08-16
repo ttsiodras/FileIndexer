@@ -278,7 +278,13 @@ class FileDB:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
-        self.conn.execute("PRAGMA journal_mode=WAL")
+        mode = self.conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        if mode and mode[0] != 'wal':
+            # On filesystems without WAL support (FAT/exFAT, some network
+            # shares) the PRAGMA silently keeps another journal mode; warn so
+            # the user knows the DB isn't behaving as configured.
+            print(f"[!] Journal mode is {mode[0]}, not WAL, on {db_path}"
+                  f" (WAL unsupported on this filesystem).")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self._ensure_table()
 
@@ -322,12 +328,13 @@ class FileDB:
 
     def upsert_with_md5(self, item: FileMetadata, md5: HashResult) -> None:
         """Insert or update a file row including its MD5."""
+        # filename/top_folder are deliberately not updated: they are the
+        # conflict key (top_folder, full_path) or its basename, so they can
+        # never differ on conflict.
         self.conn.execute(
             '''INSERT INTO files (filename, full_path, top_folder,
                mtime, md5, filesize) VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(top_folder, full_path) DO UPDATE SET
-                   filename=excluded.filename,
-                   top_folder=excluded.top_folder,
                    mtime=excluded.mtime,
                    md5=excluded.md5,
                    filesize=excluded.filesize''',
@@ -346,16 +353,33 @@ class FileDB:
             paths,
         )
 
-    def query_limit(self, limit: int) -> List[LimitCheckResult]:
+    def query_limit(
+        self, limit: int,
+        top_folders: Optional[Iterable[SafeTopFolder]] = None,
+    ) -> List[LimitCheckResult]:
         """Find (full_path, md5) pairs that appear in fewer than ``limit``
         distinct top_folders.
+
+        If *top_folders* is given, only copies within those folders count
+        (the check is scoped to exactly the folders the user asked about);
+        otherwise every top_folder in the database is considered.
         """
-        cursor = self.conn.execute('''
-            SELECT full_path, md5, COUNT(DISTINCT top_folder) AS copies
-            FROM files
-            WHERE md5 IS NOT NULL
-            GROUP BY full_path, md5
-            HAVING copies < ?''', (limit,))
+        if top_folders:
+            scope = list(top_folders)
+            placeholders = ','.join('?' * len(scope))
+            cursor = self.conn.execute(f'''
+                SELECT full_path, md5, COUNT(DISTINCT top_folder) AS copies
+                FROM files
+                WHERE md5 IS NOT NULL AND top_folder IN ({placeholders})
+                GROUP BY full_path, md5
+                HAVING copies < ?''', (*scope, limit))
+        else:
+            cursor = self.conn.execute('''
+                SELECT full_path, md5, COUNT(DISTINCT top_folder) AS copies
+                FROM files
+                WHERE md5 IS NOT NULL
+                GROUP BY full_path, md5
+                HAVING copies < ?''', (limit,))
         return [LimitCheckResult(*row) for row in cursor]
 
     def get_rows_for_validation(
@@ -461,7 +485,7 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int) -> bool:
     """
     # Resolve symlinks and use os.fsencode() for correct POSIX byte encoding.
     top_bytes: SafeTopFolder = os.fsencode(
-        os.path.realpath(os.path.normpath(top_folder))
+        os.path.realpath(top_folder)
     )
     try:
         to_insert, to_update, to_delete = find_changes(db, top_bytes)
@@ -488,12 +512,17 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int) -> bool:
     return True
 
 
-def run_limit_check(db: FileDB, limit: int, report_path: str) -> None:
+def run_limit_check(
+    db: FileDB, limit: int, report_path: str,
+    top_folders: Optional[Iterable[SafeTopFolder]] = None,
+) -> None:
     """Run the limit check and write results to *report_path*.
 
-    Each line has the form: ``<full_path>#@#<existing_copy_count> <md5>``
+    Each line has the form: ``<full_path>#@#<existing_copy_count> <md5>``.
+    *top_folders* scopes the check to those folders (when given); otherwise
+    every folder in the database is considered.
     """
-    results = db.query_limit(limit)
+    results = db.query_limit(limit, top_folders)
     with open(report_path, 'w', encoding='utf-8', errors='replace') as f:
         for full_path, md5, copies in results:
             path_str = to_printable(full_path)
@@ -637,7 +666,7 @@ def run_validation(
     """
     top_bytes: Optional[SafeTopFolder] = (
         None if target == 'all'
-        else os.fsencode(os.path.realpath(os.path.normpath(target))))
+        else os.fsencode(os.path.realpath(target)))
     rows = db.get_rows_for_validation(top_bytes)
     db_data: Dict[TopFolderAndFullPath, HashResult] = {
         (row.top_folder, row.full_path): row.md5 for row in rows
@@ -662,8 +691,8 @@ def _db_inside_top_folder(folder: str, db_path: str) -> bool:
     scanned: the tool would otherwise index its own DB file (and live
     -wal/-shm sidecars).
     """
-    folder_canon = os.path.realpath(os.path.normpath(folder))
-    db_canon = os.path.realpath(os.path.normpath(db_path))
+    folder_canon = os.path.realpath(folder)
+    db_canon = os.path.realpath(db_path)
     try:
         return (os.path.commonpath([db_canon, folder_canon])
                 == folder_canon)
@@ -738,21 +767,28 @@ def main() -> None:
                 sys.exit(1)
             print(f"[-] Validation complete. Report written to {args.report}")
         elif args.limit is not None:
-            # Mode 2: Sync all provided folders, and find low redundancy files.
+            # Mode 2: Sync the provided folders (if any), then run the
+            # redundancy check. With no folders the check covers every indexed
+            # folder; with folders it is scoped to exactly those.
             all_present = True
             for folder in args.top_folder:
                 if not perform_sync(db, folder, ncores):
                     all_present = False
             if not all_present:
-                # A folder we were asked to include is missing, so the DB now
-                # holds stale rows for it; running the redundancy check against
-                # them would give a false pass (its rows still count as "copies
-                # exist"). Refuse and exit non-zero instead.
+                # A folder we were asked to scope to is missing, so -l would
+                # count its stale rows as present copies (false redundancy
+                # pass). Refuse and exit non-zero instead.
                 print("Error: one or more top folders are missing; skipping the"
                       " limit check (stale rows would give a false redundancy "
                       "pass).")
                 sys.exit(1)
-            run_limit_check(db, args.limit, args.report)
+            # top_folders for the query must be in the same bytes form as the
+            # rows' top_folder column (matching perform_sync's top_bytes).
+            scope = (
+                [os.fsencode(os.path.realpath(f)) for f in args.top_folder]
+                if args.top_folder else None
+            )
+            run_limit_check(db, args.limit, args.report, scope)
             print(f"[-] Limit check complete. Report written to {args.report}")
         else:
             # Mode 3: Standard synchronization - all provided folders.

@@ -112,8 +112,9 @@ def main():
             "--report", str(report_path),
         ], cwd=work)
         report = read_report(report_path)
-        # With both copies identical, the limit check should produce no entries.
-        assert "=== MISMATCH" not in report and "=== MISSING" not in report, "Unexpected entries in limit report"
+        # With both copies identical and limit 2, the report must be empty:
+        # every (full_path, md5) appears in >= 2 top_folders.
+        assert report.strip() == "", "Limit report should be empty"
         print("Test5 passed")
 
         # ---------- Test 6: validation report only MATCHes ----------

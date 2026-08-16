@@ -272,10 +272,11 @@ def is_under_failed_dir(
     relative path is protected when it equals a failed dir or lies below it.
     """
     for fd in failed_dirs:
-        if not fd:
+        if fd in (b'', b'.'):
             # The top folder itself could not be scanned (transient I/O error
-            # on the root), so its entire subtree is unknown. Protect every row:
-            # an unscanned area must never be treated as "deleted".
+            # on the root; relpath of the root against itself is "."), so its
+            # whole subtree is unknown. Protect every row: an unscanned area
+            # must never be treated as "deleted".
             return True
         if full_path == fd or full_path.startswith(fd + _IFS_SEP):
             return True

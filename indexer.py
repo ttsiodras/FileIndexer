@@ -449,17 +449,25 @@ def find_changes(
     return to_insert, to_update, to_delete
 
 
-def perform_sync(db: FileDB, top_folder: str, ncores: int) -> None:
+def perform_sync(db: FileDB, top_folder: str, ncores: int) -> bool:
     """Synchronise a folder against the database.
 
     Inserts new files, updates rows whose mtime or filesize changed,
     and removes rows for files that no longer exist on disk.
+
+    Returns True on success, or False if *top_folder* no longer exists (in
+    which case a warning is printed and the folder is skipped) so callers can
+    keep going with the remaining folders but still exit non-zero.
     """
     # Resolve symlinks and use os.fsencode() for correct POSIX byte encoding.
     top_bytes: SafeTopFolder = os.fsencode(
         os.path.realpath(os.path.normpath(top_folder))
     )
-    to_insert, to_update, to_delete = find_changes(db, top_bytes)
+    try:
+        to_insert, to_update, to_delete = find_changes(db, top_bytes)
+    except FileNotFoundError:
+        print(f"[!] Skipping missing folder: {top_folder}")
+        return False
     # Combine lazily (chain) instead of building a new list, and pass the
     # known count separately for the progress display.
     sync_files_with_md5(
@@ -477,6 +485,7 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int) -> None:
         f"[-] Sync complete: {len(to_insert)} inserted, "
         f"{len(to_update)} updated, {len(to_delete)} deleted"
     )
+    return True
 
 
 def run_limit_check(db: FileDB, limit: int, report_path: str) -> None:
@@ -617,10 +626,14 @@ def write_report(
 
 def run_validation(
     db: FileDB, target: str, report_path: str, ncores: int
-) -> None:
+) -> bool:
     """Validate DB rows against the filesystem.
 
     Generates a report with MATCH, MISMATCH, MISSING, and NEW sections.
+    Returns True on success, or False if *target* (a specific folder) no
+    longer exists -- in which case a warning is printed and nothing is
+    written. ``target == 'all'`` already skips any missing DB top_folder with
+    a warning inside :func:`scan_target`.
     """
     top_bytes: Optional[SafeTopFolder] = (
         None if target == 'all'
@@ -629,12 +642,17 @@ def run_validation(
     db_data: Dict[TopFolderAndFullPath, HashResult] = {
         (row.top_folder, row.full_path): row.md5 for row in rows
     }
-    fs_data, _failed_dirs = scan_target(top_bytes, rows)
+    try:
+        fs_data, _failed_dirs = scan_target(top_bytes, rows)
+    except FileNotFoundError:
+        print(f"[!] Skipping missing folder: {target}")
+        return False
     fs_lookup = {(item.top_folder, item.full_path): item for item in fs_data}
     computed_md5s = compute_md5s_for_matches(fs_data, db_data, ncores)
     match, mismatch, missing, new_files = classify_entries(
         db_data, fs_lookup, computed_md5s)
     write_report(report_path, match, mismatch, missing, new_files)
+    return True
 
 
 def _db_inside_top_folder(folder: str, db_path: str) -> bool:
@@ -716,22 +734,40 @@ def main() -> None:
     with FileDB(args.db) as db:
         if args.validate is not None:
             # Mode 1: Validate existing DB against current filesystem state.
-            run_validation(db, args.validate, args.report, ncores)
+            if not run_validation(db, args.validate, args.report, ncores):
+                sys.exit(1)
             print(f"[-] Validation complete. Report written to {args.report}")
         elif args.limit is not None:
             # Mode 2: Sync all provided folders, and find low redundancy files.
+            all_present = True
             for folder in args.top_folder:
-                perform_sync(db, folder, ncores)
+                if not perform_sync(db, folder, ncores):
+                    all_present = False
+            if not all_present:
+                # A folder we were asked to include is missing, so the DB now
+                # holds stale rows for it; running the redundancy check against
+                # them would give a false pass (its rows still count as "copies
+                # exist"). Refuse and exit non-zero instead.
+                print("Error: one or more top folders are missing; skipping the"
+                      " limit check (stale rows would give a false redundancy "
+                      "pass).")
+                sys.exit(1)
             run_limit_check(db, args.limit, args.report)
             print(f"[-] Limit check complete. Report written to {args.report}")
         else:
             # Mode 3: Standard synchronization - all provided folders.
-            if not args.top_folder:
-                print("Error: No top folder provided for sync.")
-                sys.exit(1)
+            all_present = True
             for folder in args.top_folder:
-                perform_sync(db, folder, ncores)
+                if not perform_sync(db, folder, ncores):
+                    all_present = False
+                    continue
                 print(f"[-] DB sync complete for {folder}")
+            # If a top folder was missing (warned + skipped above), signal the
+            # partial failure with a non-zero exit code so scripts/automation
+            # can tell the run didn't fully succeed -- even though the present
+            # folders were still synced.
+            if not all_present:
+                sys.exit(1)
 
 
 if __name__ == '__main__':

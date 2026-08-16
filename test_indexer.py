@@ -226,12 +226,14 @@ def main():
         assert "mutually exclusive" in proc.stderr
         print("Test11 passed")
 
-        # Test 12: scanning a nonexistent folder raises a clear error
+        # Test 12: scanning a nonexistent folder gives a clean non-zero exit
+        # (warn + skip, no traceback).
         clean()
         proc = run_indexer([str(work / "does_not_exist"),
                             "--db", str(db_path)], cwd=work)
         assert proc.returncode != 0
-        assert "does not exist" in proc.stderr
+        assert "Skipping missing folder" in proc.stdout
+        assert "Traceback" not in proc.stderr
         print("Test12 passed")
 
         # Test 13: running with no arguments prints help and exits

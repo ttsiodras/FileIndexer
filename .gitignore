@@ -15,7 +15,6 @@ __pycache__/
 .coveragerc
 
 # Local tool config and setup markers
-.flake8
 .setup
 .analysed
 

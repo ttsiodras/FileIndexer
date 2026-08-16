@@ -44,8 +44,9 @@ Paths are stored as raw bytes so that even non-UTF-8 file names are handled safe
 ```
 python3 indexer.py [options] [FOLDER ...]
 
-Folders are required for sync and `-l`, but optional for `-v` (which can take
-its own target via `-v [FOLDER]` or `-v all` to verify all drives).
+Folders are required for sync, but optional for `-l` (no folders = check all
+folders in the database) and for `-v` (which can take its own target via
+`-v [FOLDER]` or `-v all` to verify all drives).
 ```
 
 ### Sync folders into the index

@@ -267,6 +267,11 @@ def is_under_failed_dir(
     relative path is protected when it equals a failed dir or lies below it.
     """
     for fd in failed_dirs:
+        if not fd:
+            # The top folder itself could not be scanned (transient I/O error
+            # on the root), so its entire subtree is unknown. Protect every row:
+            # an unscanned area must never be treated as "deleted".
+            return True
         if full_path == fd or full_path.startswith(fd + _IFS_SEP):
             return True
     return False
@@ -490,7 +495,7 @@ def perform_sync(db: FileDB, top_folder: str, ncores: int) -> bool:
     try:
         to_insert, to_update, to_delete = find_changes(db, top_bytes)
     except FileNotFoundError:
-        print(f"[!] Skipping missing folder: {top_folder}")
+        print(f"[!] Skipping missing (or non-folder): {top_folder}")
         return False
     # Combine lazily (chain) instead of building a new list, and pass the
     # known count separately for the progress display.
@@ -674,7 +679,7 @@ def run_validation(
     try:
         fs_data, _failed_dirs = scan_target(top_bytes, rows)
     except FileNotFoundError:
-        print(f"[!] Skipping missing folder: {target}")
+        print(f"[!] Skipping missing (or non-folder): {target}")
         return False
     fs_lookup = {(item.top_folder, item.full_path): item for item in fs_data}
     computed_md5s = compute_md5s_for_matches(fs_data, db_data, ncores)

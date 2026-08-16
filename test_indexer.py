@@ -233,7 +233,7 @@ def main():
         proc = run_indexer([str(work / "does_not_exist"),
                             "--db", str(db_path)], cwd=work)
         assert proc.returncode != 0
-        assert "Skipping missing folder" in proc.stdout
+        assert "Skipping missing (or non-folder)" in proc.stdout
         assert "Traceback" not in proc.stderr
         print("Test12 passed")
 

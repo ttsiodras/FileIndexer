@@ -1,5 +1,8 @@
 # FileIndexer - Cross-drive file redundancy & integrity checking.
 
+[Blog post](https://www.thanassis.space/indexer.html): easier-to read,
+including the backstory of this utility.
+
 [![CI](https://github.com/ttsiodras/FileIndexer/actions/workflows/ci.yml/badge.svg)](https://github.com/ttsiodras/FileIndexer/actions/workflows/ci.yml)
 
 Tracks files across mounted folders in a single SQLite database, doing MD5 csums

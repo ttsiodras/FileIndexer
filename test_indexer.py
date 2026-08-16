@@ -295,6 +295,41 @@ def main():
         assert len(query_db(db_path)) == 1000
         print("Test17 passed")
 
+        # Test 18: an unreadable subdirectory does NOT delete the rows under it
+        if os.geteuid() != 0:
+            clean()
+            up = work / "unreaddir"
+            up.mkdir()
+            inner = up / "sub"
+            # A file nested 3 levels under the soon-to-be-unreadable dir.
+            deep = inner / "level1" / "level2" / "level3"
+            deep.mkdir(parents=True)
+            (deep / "keep.txt").write_text("keep me")
+            (up / "gone.txt").write_text("delete me")
+            # First sync indexes both files.
+            proc = run_indexer([str(up), "--db", str(db_path)], cwd=work)
+            assert proc.returncode == 0, proc.stderr
+            paths = {r[0] for r in query_db(db_path)}
+            assert b"sub/level1/level2/level3/keep.txt" in paths \
+                and b"gone.txt" in paths
+            # Make the subdir unreadable AND truly delete gone.txt, then re-sync.
+            os.chmod(inner, 0)
+            try:
+                (up / "gone.txt").unlink()
+                proc = run_indexer([str(up), "--db", str(db_path)], cwd=work)
+                assert "Unreadable directory, skipping" in proc.stdout, \
+                    "No unreadable-dir warning printed"
+                paths = {r[0] for r in query_db(db_path)}
+                assert b"sub/level1/level2/level3/keep.txt" in paths, \
+                    "Row 3 levels under unreadable dir was wrongly deleted"
+                assert b"gone.txt" not in paths, \
+                    "Genuinely deleted file was not removed"
+            finally:
+                os.chmod(inner, 0o755)
+            print("Test18 passed")
+        else:
+            print("Test18 skipped (running as root)")
+
     print("All tests passed successfully.")
 
 

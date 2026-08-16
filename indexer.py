@@ -153,12 +153,20 @@ def stream_md5s(
                     pending.add(f)
 
 
-def scan_folder(top_folder: SafeTopFolder) -> List[FileMetadata]:
+def scan_folder(
+    top_folder: SafeTopFolder,
+) -> Tuple[List[FileMetadata], List[SafeRelPath]]:
     """Recursively scan a folder and return file metadata.
 
-    *top_folder* must be an absolute path as bytes. Returns a list of
-    ``FileMetadata`` with filename, full_path (relative to top_folder),
-    top_folder, mtime, and filesize.
+    *top_folder* must be an absolute path as bytes. Returns a tuple of
+    ``(results, failed_dirs)`` where ``results`` is a list of ``FileMetadata``
+    (filename, full_path relative to top_folder, top_folder, mtime, filesize)
+    and ``failed_dirs`` is a list of relative paths to directories that could
+    not be entered (permission denied, transient I/O error, ...) and were
+    therefore skipped. Rows under such directories must NOT be treated as
+    'deleted' by callers. An external USB drive can have a transient cable
+    related fault; we dont want to lose 1000s of MD5 checksums because of
+    such an issue!
 
     Raises FileNotFoundError if the folder does not exist.
     """
@@ -166,8 +174,30 @@ def scan_folder(top_folder: SafeTopFolder) -> List[FileMetadata]:
         raise FileNotFoundError(
             f"Folder does not exist: {to_printable(top_folder)}")
     results: List[FileMetadata] = []
+    failed_dirs: List[SafeRelPath] = []
     count = 0
-    for dirpath, _, filenames in os.walk(top_folder, followlinks=False):
+
+    def onerror(error: OSError) -> None:
+        """os.walk error handler: record and warn, but keep going."""
+        failed_abs = getattr(error, 'filename', None)
+        if failed_abs is not None:
+            try:
+                rel = os.path.relpath(failed_abs, top_folder)
+            except (ValueError, OSError):
+                rel = None
+            if rel is not None:
+                # relpath of two bytes paths returns bytes; normalise a str
+                # result (e.g. when only one side is str) to bytes as well.
+                if isinstance(rel, str):
+                    rel = os.fsencode(rel)
+                failed_dirs.append(rel)
+        location = (failed_abs if failed_abs is not None
+                    else b'<unknown>')
+        print(f"[!] Unreadable directory, skipping: "
+              f"{to_printable(location)}")
+
+    for dirpath, _, filenames in os.walk(
+            top_folder, followlinks=False, onerror=onerror):
         for filename in filenames:
             full_path_abs = os.path.join(dirpath, filename)
             # Skip symbolic links to prevent infinite loops
@@ -195,7 +225,24 @@ def scan_folder(top_folder: SafeTopFolder) -> List[FileMetadata]:
                       end="", flush=True)
     print(f"\r[.] {to_printable(top_folder)}: {count} files...",
           end="\n", flush=True)
-    return results
+    return results, failed_dirs
+
+
+_IFS_SEP: bytes = os.fsencode(os.sep)  # bytes form of the path separator
+
+
+def is_under_failed_dir(
+    full_path: SafeRelPath, failed_dirs: List[SafeRelPath]
+) -> bool:
+    """True if *full_path* is inside a directory on *failed_dirs*.
+
+    A directory fails *as a whole* (its subtree was not scanned), so a
+    relative path is protected when it equals a failed dir or lies below it.
+    """
+    for fd in failed_dirs:
+        if full_path == fd or full_path.startswith(fd + _IFS_SEP):
+            return True
+    return False
 
 
 class FileDB:
@@ -344,7 +391,7 @@ def find_changes(
     db: FileDB, top_folder_bytes: SafeTopFolder
 ) -> Tuple[Insertions, Updates, Deletions]:
     """Compare filesystem state with database, return categorised changes."""
-    fs_data = scan_folder(top_folder_bytes)
+    fs_data, failed_dirs = scan_folder(top_folder_bytes)
     db_data = db.load_folder(top_folder_bytes)
     fs_paths = {item.full_path for item in fs_data}
 
@@ -363,9 +410,14 @@ def find_changes(
             # computation failed (md5 is None); requires re-hashing.
             to_update.append(item)
 
-    # Identify files in DB that are no longer present on the filesystem.
+    # Identify files in DB that are no longer present on the filesystem -- but
+    # NOT files under a directory that could not be scanned (they are not really
+    # missing; deleting them on a transient EIO/permission error would silently
+    # discard live index rows). The worst case becomes "rows survive, re-check
+    # on the next run" instead of "rows vanish".
     to_delete: Deletions = [
-        (tf, fp) for (tf, fp) in db_data if fp not in fs_paths
+        (tf, fp) for (tf, fp) in db_data
+        if fp not in fs_paths and not is_under_failed_dir(fp, failed_dirs)
     ]
     return to_insert, to_update, to_delete
 
@@ -414,23 +466,27 @@ def run_limit_check(db: FileDB, limit: int, report_path: str) -> None:
 
 def scan_target(
     top_folder: Optional[SafeTopFolder], rows: List[FileRecord]
-) -> List[FileMetadata]:
+) -> Tuple[List[FileMetadata], List[SafeRelPath]]:
     """Scan filesystem for *top_folder* or all top_folders found in *rows*.
 
     If a top_folder from the DB no longer exists on disk, a warning is
     printed and that folder is skipped instead of crashing the whole run.
+    Returns ``(results, failed_dirs)``; see :func:`scan_folder`.
     """
     if top_folder is not None:
         return scan_folder(top_folder)
 
     top_folders: Set[SafeTopFolder] = {row.top_folder for row in rows}
     results: List[FileMetadata] = []
+    failed_dirs: List[SafeRelPath] = []
     for tf in top_folders:
         try:
-            results.extend(scan_folder(tf))
+            res, fds = scan_folder(tf)
+            results.extend(res)
+            failed_dirs.extend(fds)
         except FileNotFoundError:
             print(f"[!] Top folder missing, skipping: {to_printable(tf)}")
-    return results
+    return results, failed_dirs
 
 
 def compute_md5s_for_matches(
@@ -546,7 +602,7 @@ def run_validation(
     db_data: Dict[TopFolderAndFullPath, HashResult] = {
         (row.top_folder, row.full_path): row.md5 for row in rows
     }
-    fs_data = scan_target(top_bytes, rows)
+    fs_data, _failed_dirs = scan_target(top_bytes, rows)
     fs_lookup = {(item.top_folder, item.full_path): item for item in fs_data}
     computed_md5s = compute_md5s_for_matches(fs_data, db_data, ncores)
     match, mismatch, missing, new_files = classify_entries(

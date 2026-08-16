@@ -200,6 +200,10 @@ def scan_folder(
     related fault; we dont want to lose 1000s of MD5 checksums because of
     such an issue!
 
+    Uses ``os.scandir`` directly (rather than ``os.walk``) so each entry
+    already carries its symlink/stat info, avoiding an extra ``islink`` +\
+    ``stat`` syscall per file -- significant when scanning millions of files.
+
     Raises FileNotFoundError if the folder does not exist.
     """
     if not os.path.isdir(top_folder):
@@ -209,47 +213,52 @@ def scan_folder(
     failed_dirs: List[SafeRelPath] = []
     count = 0
 
-    def onerror(error: OSError) -> None:
-        """os.walk error handler: record and warn, but keep going."""
-        failed_abs = getattr(error, 'filename', None)
-        if failed_abs is not None:
+    # Explicit stack (iterative, to avoid hitting the recursion limit on very
+    # deep trees) for a depth-first, followlinks=False traversal.
+    stack = [top_folder]
+    while stack:
+        dirpath = stack.pop()
+        try:
+            entries = list(os.scandir(dirpath))
+        except OSError as error:
+            # Could not enter this directory (EACCES, transient EIO, ...).
+            # Record it so its rows are not treated as deleted, and warn.
             try:
-                rel = os.path.relpath(failed_abs, top_folder)
+                rel = os.path.relpath(dirpath, top_folder)
             except (ValueError, OSError):
                 rel = None
             if rel is not None:
-                # relpath of two bytes paths returns bytes; normalise a str
-                # result (e.g. when only one side is str) to bytes as well.
                 if isinstance(rel, str):
                     rel = os.fsencode(rel)
                 failed_dirs.append(rel)
-        location = (failed_abs if failed_abs is not None
-                    else b'<unknown>')
-        print(f"[!] Unreadable directory, skipping: "
-              f"{to_printable(location)}")
-
-    for dirpath, _, filenames in os.walk(
-            top_folder, followlinks=False, onerror=onerror):
-        for filename in filenames:
-            full_path_abs = os.path.join(dirpath, filename)
-            # Skip symbolic links to prevent infinite loops
-            # or scanning outside top_folder.
-            if os.path.islink(full_path_abs):
-                continue
-            rel_path = os.path.relpath(full_path_abs, top_folder)
+            location = getattr(error, 'filename', None) or dirpath
+            print(f"[!] Unreadable directory, skipping: "
+                  f"{to_printable(location)}")
+            continue
+        for entry in entries:
             try:
-                stat = os.stat(full_path_abs)
-                mtime = stat.st_mtime
-                filesize = stat.st_size
+                if entry.is_symlink():
+                    # Skip symbolic links (to files or dirs): prevents infinite
+                    # loops and scanning outside top_folder (followlinks=False).
+                    continue
+                if entry.is_dir():
+                    # Descend into real subdirectories only.
+                    stack.append(entry.path)
+                    continue
             except OSError:
-                # Skip files that cannot be accessed (e.g. permission denied).
+                # Could not stat this entry; skip it rather than aborting.
+                continue
+            # A regular file: use the entry's cached stat (no extra syscall).
+            try:
+                st = entry.stat()
+            except OSError:
                 continue
             results.append(FileMetadata(
-                filename=filename,
-                full_path=rel_path,
+                filename=entry.name,
+                full_path=os.path.relpath(entry.path, top_folder),
                 top_folder=top_folder,
-                mtime=mtime,
-                filesize=filesize,
+                mtime=st.st_mtime,
+                filesize=st.st_size,
             ))
             count += 1
             if count % 1000 == 0:

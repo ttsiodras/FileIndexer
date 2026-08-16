@@ -185,7 +185,21 @@ def stream_md5s(
                 pending.add(f)
 
 
-def scan_folder(
+# User customization: directories we never want indexed. Any directory whose
+# path contains one of these tokens as a substring is skipped (both its files
+# and its subtree). Kept as bytes to match the byte paths used in the scan.
+#
+# In my case, I don't care about the Deepseek weights (I can always redownload
+# them; nor do I care about the aard offline wikipedia slob files, for the same
+# reason (see https://github.com/ttsiodras/offline-wikipedia-via-slobby-and-mathjax
+# for details of what these data are about).
+#
+_DROP_DIR_TOKENS: List[bytes] = [
+    # b'Deepseek', b'aard',
+]
+
+
+def scan_folder(  # pylint: disable=too-many-branches
     top_folder: SafeTopFolder,
 ) -> Tuple[List[FileMetadata], List[SafeRelPath]]:
     """Recursively scan a folder and return file metadata.
@@ -218,6 +232,10 @@ def scan_folder(
     stack = [top_folder]
     while stack:
         dirpath = stack.pop()
+        # User customization: skip any directory whose path contains a token
+        # we do not want indexed (also applies to the top folder itself).
+        if any(token in dirpath for token in _DROP_DIR_TOKENS):
+            continue
         try:
             entries = list(os.scandir(dirpath))
         except OSError as error:

@@ -1,9 +1,8 @@
-# FileIndexer
+# FileIndexer - Cross-drive file redundancy & integrity checking.
 
-Tracks files across folders in a single SQLite database, computes MD5 checksums
-in parallel, and helps you verify redundancy and integrity — for example across
-several external/mounted USB drives that are supposed to contain copies of the
-same data.
+Tracks files across mounted folders in a single SQLite database, doing MD5 csums
+in parallel, and verifies redundancy and integrity — for example across several
+external/mounted USB drives that are supposed to contain copies of the same data.
 
 The tool is a single Python script (`indexer.py`) with **no runtime
 dependencies** — it uses only the standard library.
@@ -19,9 +18,9 @@ dependencies** — it uses only the standard library.
 - **Validate** (`-v/--validate`) — re-computes every MD5 on disk and compares it
   against the database, so you can detect silently corrupted or missing files.
 - **Parallel hashing** — MD5 computation is spread across all cores by default;
-  tune it with `-n/--ncores`. Useful also for non-SSD drives, since multiple
-  concurrent readers may actually be much slower than a single reader;
-  and also wear down the drive *(so use `-n 1` for such drives)*.
+  tune it with `-n/--ncores`. On spinning-disk (non-SSD) drives, multiple
+  concurrent readers can be much slower than a single reader and increase
+  wear — prefer `-n 1` there.
 
 ## Database
 
@@ -42,7 +41,10 @@ Paths are stored as raw bytes so that even non-UTF-8 file names are handled safe
 ## Usage
 
 ```
-python3 indexer.py [options] FOLDER [FOLDER ...]
+python3 indexer.py [options] [FOLDER ...]
+
+Folders are required for sync and `-l`, but optional for `-v` (which can take
+its own target via `-v [FOLDER]` or `-v all` to verify all drives).
 ```
 
 ### Sync folders into the index
@@ -58,8 +60,8 @@ python3 indexer.py -n 4 --db /data/files.db /mnt/ssd
 ### Find files that lack redundancy
 
 ```sh
-# Report every (full_path) that exists in fewer than 3 distinct top_folders
-python3 indexer.py -l 3 -n 1 /mnt/usb1 /mnt/usb2
+# Report every full_path that exists in fewer than 2 distinct top folders
+python3 indexer.py -l 2 -n 1 /mnt/usb1 /mnt/usb2
 ```
 
 The `-l` mode syncs the given folders first, then writes the low-redundancy
@@ -75,9 +77,21 @@ python3 indexer.py -v
 python3 indexer.py -v /mnt/usb1
 ```
 
-The report classifies every row as `MATCH`, `MISMATCH`, `MISSING` or `NEW`, and
-also echoes problems to the console. Validation and limit-check are mutually
-exclusive (`--validate` and `--limit` can't be combined).
+The results are written to `report.log` (override with `--report`). Each file is
+classified as `MATCH` (on disk with the expected MD5), `MISMATCH` (on disk but
+MD5 differs, or unreadable), `MISSING` (in the DB but not on disk) or `NEW`
+(on disk but not in the DB); problems are also echoed to the console. A sample
+`report.log` looks like:
+
+    === MISMATCH ===
+    MISMATCH: /mnt/usb1/backup.tgz (expected=abc..., actual=def...)
+    === MISSING ===
+    MISSING: /mnt/usb2/docs/report.pdf (expected_md5=0123...)
+    === NEW ===
+    NEW: /mnt/usb1/temp/scratch.bin
+
+Validation and limit-check are mutually exclusive (`--validate` and `--limit`
+can't be combined).
 
 ### Options
 
@@ -88,7 +102,8 @@ positional:
 optional:
   -n, --ncores N         parallel workers for MD5 hashing (default: all cores)
   -l, --limit N          flag files present in fewer than N top_folders
-  -v, --validate [T]     validate DB against filesystem (T = a folder or 'all')
+  -v, --validate [T]     validate DB against filesystem (T = a folder or
+                         'all'; default: 'all')
   --db PATH              SQLite database path (default: files.db)
   --report PATH          report path (default: report.log)
   -h, --help             show help
@@ -96,7 +111,7 @@ optional:
 
 ## Requirements
 
-- **Python 3.6+** — the script needs no third-party packages; the standard library
+- **Python 3.9+** — the script needs no third-party packages; the standard library
   is enough.
 - For development (linting, type-checking, coverage etc) the Makefile will install
   a set of tools from `requirements-dev.txt`.

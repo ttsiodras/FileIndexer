@@ -330,6 +330,62 @@ def main():
         else:
             print("Test18 skipped (running as root)")
 
+        # Test 19: a dead hashing pool must not abort the sync (refill guard).
+        # Simulate a killed worker by making the pool's submit raise
+        # BrokenProcessPool after the initial window is submitted; stream_md5s
+        # must degrade the remaining files to md5=None instead of tracebacking.
+        import concurrent.futures as _cf
+        import indexer as _ix
+        from concurrent.futures.process import BrokenProcessPool
+        from concurrent.futures import Future
+
+        class _DeadPool:
+            def __init__(self, max_workers, fail_after):
+                self.calls = 0
+                self.fail_after = fail_after
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.shutdown()
+
+            def shutdown(self, wait=True):
+                pass
+
+            def submit(self, fn, *args):
+                self.calls += 1
+                if self.calls > self.fail_after:
+                    raise BrokenProcessPool("simulated worker death")
+                fut = Future()
+                fut.set_result("deadbeef")
+                return fut
+
+        n = 20
+        batch = 8
+        items = [
+            _ix.FileMetadata(f"f{i}".encode(), f"f{i}".encode(),
+                             b"/tmp/x", 0.0, 10)
+            for i in range(n)
+        ]
+        orig_pool = _ix.ProcessPoolExecutor
+        _ix.ProcessPoolExecutor = (
+            lambda max_workers=1, **kw: _DeadPool(max_workers, batch))
+        try:
+            results = list(_ix.stream_md5s(items, 4, batch=batch))
+        finally:
+            _ix.ProcessPoolExecutor = orig_pool
+        assert len(results) == n, \
+            f"stream_md5s yielded {len(results)} of {n} after pool death"
+        ok = sum(1 for _, m in results if m == "deadbeef")
+        none = sum(1 for _, m in results if m is None)
+        assert ok == batch and none == n - batch, \
+            f"expected {batch} hashed + {n-batch} None, got {ok} + {none}"
+        yielded = sorted(r[0].full_path for r in results)
+        expected = sorted(it.full_path for it in items)
+        assert yielded == expected, "items got lost/reordered on pool death"
+        print("Test19 passed")
+
     print("All tests passed successfully.")
 
 

@@ -127,6 +127,7 @@ def stream_md5s(
             for item in islice(it, batch)
         }
         pending = set(future_to_item)
+        pool_dead = False
         while pending:
             # Yield results in true completion order, refilling one-for-one.
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -136,21 +137,47 @@ def stream_md5s(
                     md5: HashResult = future.result()
                 except Exception:  # pylint: disable=broad-exception-caught
                     # A worker died for whatever reason (for example OSError,
-                    # MemoryError on a huge file, or a BrokenProcessPool from
-                    # a killed process). Rather than abort the whole sync,
-                    # degrade to the "could not read" path so the caller
-                    # marks it for retry on the next run.
+                    # MemoryError on a huge file, or the pool being broken by a
+                    # killed worker). Rather than abort the whole sync, degrade
+                    # to the "could not read" path: store md5=None (a NULL row)
+                    # so find_changes re-hashes it on the next run.
                     md5 = None
                 yield item, md5
+                if pool_dead:
+                    # The pool broke during a refill below; already-submitted
+                    # futures are handled above (result() raises BrokenProcessPool
+                    # md5 -> None), for both the rest of this `done` batch, and
+                    # any still sitting in `pending` (they error out in later
+                    # while iterations). Just stop refilling it.
+                    continue
                 # Refill the window with the next unreached file, if any.
                 nxt = next(it, None)
-                if nxt is not None:
+                if nxt is None:
+                    continue
+                try:
                     f = executor.submit(
                         compute_md5,
                         os.path.join(nxt.top_folder, nxt.full_path),
                     )
-                    future_to_item[f] = nxt
-                    pending.add(f)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    # The pool is broken (e.g. a worker was killed or OOM'd), so
+                    # submitting any further work raises immediately. Stop
+                    # submitting to the dead pool; degrade this file and every
+                    # remaining one to md5=None (a NULL row) so find_changes
+                    # re-hashes them all on the next run, instead of aborting
+                    # the sync with an unhandled traceback. Note the split of
+                    # labour: `it` (the never-submitted remainder of the input)
+                    # is drained inline right here, while `done`/`pending` (the
+                    # already-submitted but now-broken futures) are drained by
+                    # the future.result() -> None path above -- so no item is
+                    # dropped and none is drained twice.
+                    pool_dead = True
+                    yield nxt, None
+                    for remaining in it:
+                        yield remaining, None
+                    continue
+                future_to_item[f] = nxt
+                pending.add(f)
 
 
 def scan_folder(

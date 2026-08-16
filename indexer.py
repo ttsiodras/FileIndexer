@@ -637,6 +637,23 @@ def run_validation(
     write_report(report_path, match, mismatch, missing, new_files)
 
 
+def _db_inside_top_folder(folder: str, db_path: str) -> bool:
+    """True if *db_path* is inside (or equal to) *folder*, both resolved.
+
+    Used to reject storing the database inside a folder that is about to be
+    scanned: the tool would otherwise index its own DB file (and live
+    -wal/-shm sidecars).
+    """
+    folder_canon = os.path.realpath(os.path.normpath(folder))
+    db_canon = os.path.realpath(os.path.normpath(db_path))
+    try:
+        return (os.path.commonpath([db_canon, folder_canon])
+                == folder_canon)
+    except ValueError:
+        # e.g. paths on different drives share no common prefix -> not inside.
+        return False
+
+
 def parse_args() -> argparse.Namespace:
     """Parse and return command line arguments, otherwise exit with help."""
     parser = argparse.ArgumentParser(
@@ -679,6 +696,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Entry point: parse arguments and dispatch to the appropriate mode."""
     args = parse_args()
+
+    # Fail fast if the database is stored inside a folder we are about to scan.
+    # Doing so would make the tool index its own DB file (and live -wal/-shm
+    # sidecars), which churns every run and reads a transiently inconsistent
+    # file. That is an anti-pattern, so abort before any walk or write happens.
+    for folder in args.top_folder:
+        if _db_inside_top_folder(folder, args.db):
+            print(f"Error: database {args.db} is inside folder being scanned: "
+                  f"{folder}. Store it outside the scanned tree.")
+            sys.exit(1)
 
     # Determine number of worker processes.
     ncores: int = (

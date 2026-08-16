@@ -386,6 +386,19 @@ def main():
         assert yielded == expected, "items got lost/reordered on pool death"
         print("Test19 passed")
 
+        # Test 20: a --db stored inside a scanned top_folder is rejected at
+        # launch (fail fast, before any walk or DB write).
+        clean()
+        scandb = work / "scandb"
+        scandb.mkdir()
+        (scandb / "a.txt").write_text("hi")
+        db_inside = scandb / "x.db"
+        proc = run_indexer([str(scandb), "--db", str(db_inside)], cwd=work)
+        assert proc.returncode == 1, "DB-inside-scan should fail immediately"
+        assert "inside folder being scanned" in proc.stdout
+        assert not db_inside.exists(), "DB was created despite the guard"
+        print("Test20 passed")
+
     print("All tests passed successfully.")
 
 

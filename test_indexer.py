@@ -17,18 +17,36 @@ from pathlib import Path
 INDEXER = Path(__file__).with_name("indexer.py")
 
 
-def run_indexer(args, cwd=None):
+# Deterministic config baseline for every child run. load_config() honours
+# $INDEXER_CONFIG *ahead* of the "indexer.toml beside the script" lookup, and
+# /dev/null is not a regular file - so a default run always reports
+# "no config file: excluding nothing" no matter what (gitignored) indexer.toml
+# happens to sit next to indexer.py on the developer's box. Pass config= to
+# opt into a real one.
+CONFIG_BASELINE = os.devnull
+
+
+def run_indexer(args, cwd=None, env=None, config=CONFIG_BASELINE):
     """Run ``indexer.py`` with the given *args* and return the completed process.
 
     ``cwd`` defaults to the current working directory; a temporary directory is
     used for isolation in the test suite.
+
+    ``config`` is the file the child is told to read via ``$INDEXER_CONFIG``;
+    the default is the unusable ``CONFIG_BASELINE`` path, i.e. "no config at
+    all", which keeps the exclusions asserted below reproducible. ``env``, when
+    given, replaces the child environment wholesale.
     """
+    if env is None:
+        env = os.environ.copy()
+        env["INDEXER_CONFIG"] = config
     return subprocess.run(
         [sys.executable, str(INDEXER)] + args,
         cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
@@ -404,6 +422,208 @@ def main():
         assert "inside folder being scanned" in proc.stdout
         assert not db_inside.exists(), "DB was created despite the guard"
         print("Test20 passed")
+
+        # Test 21: indexer.toml drives BOTH kinds of exclusion. A directory
+        # whose path holds a drop_dir_token vanishes with its whole subtree,
+        # and a file whose NAME holds a drop_name_substrings entry is skipped
+        # while its siblings stay.
+        clean()
+        cfg21 = work / "cfg21.toml"
+        cfg21.write_text('drop_dir_tokens = ["exclude_me"]\n'
+                         'drop_name_substrings = [".skip_"]\n',
+                         encoding="utf-8")
+        c21 = work / "cfg21"
+        c21.mkdir()
+        (c21 / "keep.txt").write_text("keep")
+        (c21 / "noise.skip_.txt").write_text("skip me")
+        hidden = c21 / "exclude_me"
+        hidden.mkdir()
+        (hidden / "underneath.txt").write_text("should never be seen")
+        proc = run_indexer([str(c21), "--db", str(db_path)], cwd=work,
+                           config=str(cfg21))
+        assert proc.returncode == 0, proc.stderr
+        paths = {r[0] for r in query_db(db_path)}
+        assert paths == {b"keep.txt"}, f"config exclusions wrong: {paths}"
+        # The config in force, and its effective size, must be on the status
+        # line - an ignored config file must never look like a success.
+        assert str(cfg21) in proc.stdout, "config path not reported"
+        assert "1 dir tokens, 1 name skips" in proc.stdout, proc.stdout
+        print("Test21 passed")
+
+        # Test 22: db/report come from the config when the command line is
+        # silent, and the command line still overrides both when explicit.
+        clean()
+        cfg22 = work / "cfg22.toml"
+        db_cfg = work / "fromcfg.db"
+        rep_cfg = work / "fromcfg.log"
+        cfg22.write_text(f'db = "{db_cfg}"\nreport = "{rep_cfg}"\n',
+                         encoding="utf-8")
+        c22 = work / "cfg22"
+        c22.mkdir()
+        (c22 / "a.txt").write_text("aaa")
+        proc = run_indexer([str(c22)], cwd=work, config=str(cfg22))
+        assert proc.returncode == 0, proc.stderr
+        assert db_cfg.exists(), "config db= was not honoured"
+        assert not db_path.exists(), "default files.db used despite config db="
+        assert f"db={db_cfg}" in proc.stdout, proc.stdout
+        proc = run_indexer(["-v", "all", str(c22)], cwd=work,
+                           config=str(cfg22))
+        assert proc.returncode == 0, proc.stderr
+        assert rep_cfg.exists(), "config report= was not honoured"
+        # Now override both on the command line.
+        clean()
+        rep_cfg.unlink(missing_ok=True)
+        proc = run_indexer([str(c22), "--db", str(db_path),
+                            "--report", str(report_path)], cwd=work,
+                           config=str(cfg22))
+        assert proc.returncode == 0, proc.stderr
+        assert db_path.exists(), "--db override failed"
+        assert f"db={db_path}" in proc.stdout, proc.stdout
+        proc = run_indexer(["-v", "all", str(c22), "--db", str(db_path),
+                            "--report", str(report_path)], cwd=work,
+                           config=str(cfg22))
+        assert report_path.exists(), "--report override failed"
+        assert not rep_cfg.exists(), "config report= used over --report"
+        print("Test22 passed")
+
+        # Test 23: a config key of the wrong type aborts the run cleanly,
+        # before anything is indexed - never a traceback, never a partial DB.
+        clean()
+        bad_list = work / "badlist.toml"
+        bad_list.write_text('drop_dir_tokens = "exclude_me"\n',
+                            encoding="utf-8")
+        c23 = work / "cfg23"
+        c23.mkdir()
+        (c23 / "a.txt").write_text("aaa")
+        proc = run_indexer([str(c23), "--db", str(db_path)], cwd=work,
+                           config=str(bad_list))
+        assert proc.returncode == 1, "bad list type should abort the run"
+        assert "must be a list of strings" in proc.stdout, proc.stdout
+        assert "Traceback" not in proc.stderr, proc.stderr
+        assert not db_path.exists(), "DB was created despite the bad config"
+        bad_str = work / "badstr.toml"
+        bad_str.write_text("db = 5\n", encoding="utf-8")
+        proc = run_indexer([str(c23), "--db", str(db_path)], cwd=work,
+                           config=str(bad_str))
+        assert proc.returncode == 1, "bad db type should abort the run"
+        assert "must be a str" in proc.stdout, proc.stdout
+        assert "Traceback" not in proc.stderr, proc.stderr
+        print("Test23 passed")
+
+        # Test 24: an unknown key is warned about and ignored, and the run
+        # proceeds. This is the misspelled-key case (note the typo below).
+        clean()
+        cfg24 = work / "unk.toml"
+        cfg24.write_text('drop_dir_tokens = ["exclude_me"]\n'
+                         'drop_dire_tokens = ["typoed"]\n', encoding="utf-8")
+        c24 = work / "cfg24"
+        c24.mkdir()
+        (c24 / "a.txt").write_text("aaa")
+        proc = run_indexer([str(c24), "--db", str(db_path)], cwd=work,
+                           config=str(cfg24))
+        assert proc.returncode == 0, proc.stderr
+        assert "ignoring unknown key" in proc.stdout, proc.stdout
+        assert "drop_dire_tokens" in proc.stdout, "typoed key not named"
+        assert len(query_db(db_path)) == 1, "unknown key changed behaviour"
+        print("Test24 passed")
+
+        # Test 25: no config file at all. The run must go ahead and index
+        # EVERYTHING, and say so explicitly - "carries no policy of its own"
+        # has to be visible in the log, not silently assumed.
+        clean()
+        proc = run_indexer([str(c21), "--db", str(db_path)], cwd=work,
+                           config=str(work / "absent.toml"))
+        assert proc.returncode == 0, proc.stderr
+        assert "no config file: excluding nothing" in proc.stdout, proc.stdout
+        assert "0 dir tokens, 0 name skips" in proc.stdout, proc.stdout
+        paths = {r[0] for r in query_db(db_path)}
+        assert b"noise.skip_.txt" in paths and b"exclude_me/underneath.txt" \
+            in paths, f"nothing should have been excluded: {paths}"
+        print("Test25 passed")
+
+        # Test 26: _evict_pages must fdatasync FIRST and only then advise the
+        # kernel to drop the pages - dirty pages cannot be evicted, so without
+        # the sync a freshly-written file would still be summed out of its own
+        # page cache and the MD5 would stop covering the medium. Both calls are
+        # best-effort: neither may fail the run.
+        import indexer as _ix
+        calls = []
+        real_sync, real_advise = _ix.os.fdatasync, _ix.os.posix_fadvise
+        try:
+            _ix.os.fdatasync = lambda fd: calls.append(("fdatasync", fd))
+            _ix.os.posix_fadvise = lambda fd, off, length, adj: \
+                calls.append(("posix_fadvise", fd, adj))
+            _ix._evict_pages(7)
+            assert [c[0] for c in calls] == ["fdatasync", "posix_fadvise"], \
+                f"wrong order/coverage: {calls}"
+            assert calls[0][1] == 7 and calls[1][1] == 7, "fd not passed to both"
+            assert calls[1][2] == os.POSIX_FADV_DONTNEED, \
+                "must advise POSIX_FADV_DONTNEED, got " + repr(calls[1][2])
+
+            def _boom(*_args, **_kw):
+                raise OSError("simulated EIO")
+
+            calls.clear()
+            _ix.os.fdatasync = _boom
+            _ix.os.posix_fadvise = _boom
+            _ix._evict_pages(7)          # must swallow, not propagate
+            print("Test26 passed")
+        finally:
+            _ix.os.fdatasync = real_sync
+            _ix.os.posix_fadvise = real_advise
+
+        # Test 27: exclusions are matched on BYTES, so they must keep working
+        # for names that are not valid UTF-8 (surrogateescape paths) and for
+        # non-ASCII tokens. A str/bytes mix-up here silently excludes nothing.
+        clean()
+        cfg27 = work / "bytes.toml"
+        cfg27.write_text('drop_name_substrings = ["weird", "\u03b1\u03b2"]\n',
+                         encoding="utf-8")
+        c27 = work / "cfg27"
+        c27.mkdir()
+        (c27 / "keep.dat").write_text("keep")
+        with open(os.path.join(str(c27).encode(), b"weird\xff.dat"), "wb") as fh:
+            fh.write(b"undecodable name\n")
+        (c27 / "\u03b1\u03b2\u03b3_skipme.dat").write_text("greek")
+        proc = run_indexer([str(c27), "--db", str(db_path)], cwd=work,
+                           config=str(cfg27))
+        assert proc.returncode == 0, proc.stderr
+        paths = {r[0] for r in query_db(db_path)}
+        assert paths == {b"keep.dat"}, f"byte-path exclusions wrong: {paths}"
+        assert "2 name skips" in proc.stdout, proc.stdout
+        print("Test27 passed")
+
+        # Test 28: an indexer.toml that cannot be parsed (or read) must abort
+        # the run with a clear message. Falling back to "exclude nothing" here
+        # would quietly index a box whose policy is precisely to exclude
+        # something, so a garbled config has to be fatal, not ignorable.
+        clean()
+        broken = work / "broken.toml"
+        broken.write_text('drop_dir_tokens = ["unterminated\n',
+                          encoding="utf-8")
+        proc = run_indexer([str(c21), "--db", str(db_path)], cwd=work,
+                           config=str(broken))
+        assert proc.returncode == 1, "unparsable config should abort the run"
+        assert "Error: cannot read" in proc.stdout, proc.stdout
+        assert "Traceback" not in proc.stderr, proc.stderr
+        assert not db_path.exists(), "DB was created despite the bad config"
+        if os.geteuid() != 0:
+            clean()
+            locked = work / "locked.toml"
+            locked.write_text('drop_dir_tokens = ["x"]\n', encoding="utf-8")
+            os.chmod(locked, 0)
+            try:
+                proc = run_indexer([str(c21), "--db", str(db_path)], cwd=work,
+                                   config=str(locked))
+                assert proc.returncode == 1, "unreadable config should abort"
+                assert "Error: cannot read" in proc.stdout, proc.stdout
+                assert not db_path.exists()
+            finally:
+                os.chmod(locked, 0o644)
+            print("Test28 passed")
+        else:
+            print("Test28 partially skipped (running as root: "
+                  "unreadable-file half needs non-root)")
 
     print("All tests passed successfully.")
 

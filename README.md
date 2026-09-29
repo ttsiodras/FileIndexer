@@ -124,15 +124,43 @@ optional:
   -l, --limit N          flag files present in fewer than N top_folders
   -v, --validate [T]     validate DB against filesystem (T = a folder or
                          'all'; default: 'all')
-  --db PATH              SQLite database path (default: files.db)
-  --report PATH          report path (default: report.log)
+  --db PATH              SQLite database path (default: from indexer.toml,
+                         else files.db)
+  --report PATH          report path (default: from indexer.toml,
+                         else report.log)
+  --config PATH          config file to use instead of the indexer.toml next
+                         to this script (also honours $INDEXER_CONFIG)
   -h, --help             show help
 ```
 
+### Per-machine configuration (indexer.toml)
+
+The script itself carries **no exclusion policy**: a given box's exclusions are
+meaningless (and sometimes confidential) on another box. Per-machine settings
+live in an `indexer.toml` beside `indexer.py`, which is gitignored; copy
+`indexer.toml.example` to get started.
+
+```toml
+drop_dir_tokens      = ["ai_model_weights", "scratch"]   # skip dir + subtree
+drop_name_substrings = ["preview_", ".deprecated"]       # skip files by name
+db     = "files.db"      # default for --db
+report = "report.log"    # default for --report
+```
+
+Lookup order is `--config`, then `$INDEXER_CONFIG`, then `indexer.toml` beside
+the resolved script path. Command line options always override the file.
+
+A missing file is neither an error nor a warning: the run goes ahead indexing
+**everything**, and the status line reports that explicitly as
+`no config file: excluding nothing ... 0 dir tokens`, so a silently-ignored
+config never looks like a successful exclusion. Unknown keys are warned about
+and ignored; a key of the wrong type aborts the run before any indexing.
+
 ## Requirements
 
-- **Python 3.9+** — the script needs no third-party packages; the standard library
-  is enough.
+- **Python 3.11+** — the script needs no third-party packages; the standard
+  library is enough. `3.11` is the floor because `tomllib` (used to read
+  `indexer.toml`) entered the stdlib there.
 - For development (linting, type-checking, coverage etc) the Makefile will install
   a set of tools from `requirements-dev.txt`.
 
@@ -157,6 +185,7 @@ a subprocess against temporary folders.
 
 ```
 indexer.py           the tool (single file, stdlib only)
+indexer.toml.example template for the per-machine config (indexer.toml is gitignored)
 test_indexer.py      end-to-end test suite
 Makefile             developer tasks
 pylint.cfg           lint configuration

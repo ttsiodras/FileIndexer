@@ -11,9 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The minimum supported version (3.9, where hashlib.md5 gained
-        # usedforsecurity=) plus recent versions.
-        python-version: ['3.9', '3.12', '3.14']
+        # The minimum supported version (3.11, where tomllib gained to the
+        # stdlib and indexer.toml therefore became parseable) plus recent
+        # versions.
+        python-version: ['3.11', '3.12', '3.14']
     steps:
       - uses: actions/checkout@v4
 

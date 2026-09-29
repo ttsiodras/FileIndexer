@@ -61,10 +61,10 @@ coverage: dev-install
 dev-install:	.setup | prereq
 
 prereq:
-	@${PYTHON} -c 'import sys; sys.exit(1 if sys.version_info < (3, 9) else 0)' || { \
+	@${PYTHON} -c 'import sys; sys.exit(1 if sys.version_info < (3, 11) else 0)' || { \
 	    echo "=============================================" ; \
-	    echo "[x] You need at least Python 3.9 to run this" ; \
-	    echo "    (hashlib.md5(usedforsecurity=...) needs 3.9+)." ; \
+	    echo "[x] You need at least Python 3.11 to run this" ; \
+	    echo "    (tomllib, needed to read indexer.toml, is stdlib from 3.11)." ; \
 	    echo "=============================================" ; \
 	    exit 1 ; \
 	}

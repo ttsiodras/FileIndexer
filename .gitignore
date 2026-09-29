@@ -1,6 +1,10 @@
 # AI / editor scratch files
 .claude/
 
+# Per-machine policy (never commit - one box's exclusions are meaningless,
+# and sometimes confidential, on another box). See indexer.toml.example.
+indexer.toml
+
 # Runtime artifacts (never commit these - they contain your file index)
 files.db
 files.db-wal
